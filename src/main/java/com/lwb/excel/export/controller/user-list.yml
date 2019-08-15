@@ -7,9 +7,11 @@ headers:
   -
    - name: 编号
    - name: 姓名
-   - name: 摘要
+   - name: 班级
+   - name: 学校
 # 表头对应字段信息
 fields:
   - id
   - name
-  - summary
+  - classVO.name
+  - classVO.school.name

@@ -1,4 +1,4 @@
-package com.lwb.excel.export.dao;
+package com.lwb.excel.export.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.lwb.excel.export.entity.Classes;

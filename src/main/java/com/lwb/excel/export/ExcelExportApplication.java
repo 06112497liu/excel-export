@@ -4,7 +4,7 @@ import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
-@MapperScan(basePackages = {"com.lwb.excel.export.dao"})
+@MapperScan(basePackages = {"com.lwb.excel.export.mapper"})
 @SpringBootApplication
 public class ExcelExportApplication {
 

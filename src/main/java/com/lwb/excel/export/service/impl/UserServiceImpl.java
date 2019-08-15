@@ -1,8 +1,8 @@
 package com.lwb.excel.export.service.impl;
 
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
-import com.lwb.excel.export.dao.UserMapper;
 import com.lwb.excel.export.entity.User;
+import com.lwb.excel.export.mapper.UserMapper;
 import com.lwb.excel.export.service.IUserService;
 import org.springframework.stereotype.Service;
 

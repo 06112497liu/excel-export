@@ -1,8 +1,8 @@
 package com.lwb.excel.export.service.impl;
 
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
-import com.lwb.excel.export.dao.SchoolMapper;
 import com.lwb.excel.export.entity.School;
+import com.lwb.excel.export.mapper.SchoolMapper;
 import com.lwb.excel.export.service.ISchoolService;
 import org.springframework.stereotype.Service;
 

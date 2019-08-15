@@ -1,7 +1,7 @@
 package com.lwb.excel.export.controller;
 
 import com.lwb.excel.export.annotation.Export;
-import com.lwb.excel.export.dao.UserMapper;
+import com.lwb.excel.export.mapper.UserMapper;
 import com.lwb.excel.export.util.ExcelUtils;
 import lombok.AccessLevel;
 import lombok.experimental.FieldDefaults;
