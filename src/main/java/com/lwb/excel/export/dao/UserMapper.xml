@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.lwb.excel.export.dao.UserMapper">
+
+    <resultMap id="getUserListMap" type="com.lwb.excel.export.vo.UserVO">
+        <id property="id" column="id"/>
+        <result property="name" column="name"/>
+
+        <association property="classVO" javaType="com.lwb.excel.export.vo.ClassVO">
+            <id property="id" column="classId"/>
+            <result property="name" column="className"/>
+
+            <association property="school" javaType="com.lwb.excel.export.entity.School">
+                <id property="id" column="schoolId"/>
+                <result property="name" column="schoolName"/>
+            </association>
+
+        </association>
+    </resultMap>
+    <select id="getUserList" resultMap="getUserListMap">
+        SELECT
+            bu.id,
+            bu.name,
+            bc.id     AS classId,
+            bc.`name` AS className,
+            bs.id     AS schoolId,
+            bs.`name` AS schoolName
+        FROM
+            b_user bu
+            LEFT JOIN b_classes bc ON bu.class_id = bc.id
+            LEFT JOIN b_school bs ON bc.school_id = bs.id
+    </select>
+</mapper>

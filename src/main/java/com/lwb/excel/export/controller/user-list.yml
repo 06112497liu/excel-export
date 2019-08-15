@@ -1,0 +1,15 @@
+# 文件名称
+fileName: 用户列表
+# 冻结信息
+freezePaneIndex: 0,1,1,1
+# 表头信息
+headers:
+  -
+   - name: 编号
+   - name: 姓名
+   - name: 摘要
+# 表头对应字段信息
+fields:
+  - id
+  - name
+  - summary
