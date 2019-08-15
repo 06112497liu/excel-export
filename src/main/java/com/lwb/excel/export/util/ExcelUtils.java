@@ -168,8 +168,8 @@ public class ExcelUtils {
         if (fieldName.contains(POINT)) {
             int i = fieldName.indexOf(POINT);
             String currentFieldName = fieldName.substring(0, i);
-            String nextFieldName = fieldName.substring(i + 1, fieldName.length() - 1);
-            Field field = obj.getClass().getField(currentFieldName);
+            String nextFieldName = fieldName.substring(i + 1, fieldName.length());
+            Field field = obj.getClass().getDeclaredField(currentFieldName);
             if (!field.isAccessible()) {
                 field.setAccessible(true);
             }
@@ -192,7 +192,7 @@ public class ExcelUtils {
      * @return
      */
     private static String formatFieldValue(Object obj, String fieldName) throws NoSuchFieldException, IllegalAccessException {
-        Field field = obj.getClass().getField(fieldName);
+        Field field = obj.getClass().getDeclaredField(fieldName);
         if (!field.isAccessible()) {
             field.setAccessible(true);
         }
