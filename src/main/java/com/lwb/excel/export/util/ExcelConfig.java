@@ -7,6 +7,7 @@ import lombok.experimental.FieldDefaults;
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
 
+import java.io.Serializable;
 import java.util.List;
 import java.util.Optional;
 
@@ -16,8 +17,9 @@ import java.util.Optional;
  */
 @Data
 @FieldDefaults(level = AccessLevel.PRIVATE)
-public class ExcelConfig {
+public class ExcelConfig implements Serializable {
 
+    private static final long serialVersionUID = 1L;
     /**
      * 导出文件名
      */
@@ -38,12 +40,16 @@ public class ExcelConfig {
      * 支持多行表头
      */
     List<List<Header>> headers;
-
+    /**
+     * 字段名称
+     */
     List<String> fields;
 
     @Data
     @FieldDefaults(level = AccessLevel.PRIVATE)
-    static class Header {
+    static class Header implements Serializable {
+
+        private static final long serialVersionUID = 1L;
         /**
          * 表头名称
          */

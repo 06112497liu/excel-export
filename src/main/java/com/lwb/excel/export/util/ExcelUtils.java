@@ -6,10 +6,12 @@ import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import com.lwb.excel.export.annotation.Export;
 import com.lwb.excel.export.exception.UtilException;
 import org.apache.commons.collections4.CollectionUtils;
+import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.time.DateFormatUtils;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.ss.util.CellRangeAddress;
+import org.apache.poi.ss.util.RegionUtil;
 import org.apache.poi.util.IOUtils;
 import org.apache.poi.xssf.streaming.SXSSFCell;
 import org.apache.poi.xssf.streaming.SXSSFRow;
@@ -18,26 +20,36 @@ import org.apache.poi.xssf.streaming.SXSSFWorkbook;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.servlet.ServletOutputStream;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
 import java.beans.IntrospectionException;
 import java.beans.PropertyDescriptor;
-import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.FileOutputStream;
-import java.io.IOException;
+import java.io.*;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.net.URL;
+import java.net.URLEncoder;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
+import java.util.stream.Stream;
 
 import static com.lwb.excel.export.enums.FileType.XLSX;
 import static com.lwb.excel.export.util.ExcelUtils.Constant.*;
 import static com.lwb.excel.export.util.ExcelUtils.ExcelStyle.headerStyle;
+import static com.lwb.excel.export.util.ExcelUtils.ExcelStyle.setCellRangeAddress;
+import static com.lwb.excel.export.util.ExcelUtils.Headers.USER_AGENT;
+import static com.lwb.excel.export.util.ExcelUtils.MediaType.APPLICATION_OCTET_STREAM_VALUE;
 
 /**
  * @author liuweibo
@@ -50,6 +62,37 @@ public class ExcelUtils {
     private static final String TEMP_EXCEL_PATH = "temp";
     public static final String CLASSPATH_URL_PREFIX = "classpath:";
     private static Logger LOGGER = LoggerFactory.getLogger(ExcelUtils.class);
+
+    private static ThreadPoolExecutor EXECUTOR;
+
+    static {
+        int coreSize = Runtime.getRuntime().availableProcessors();
+        EXECUTOR = new ThreadPoolExecutor(
+            coreSize,
+            coreSize << 1,
+            200,
+            TimeUnit.SECONDS,
+            new LinkedBlockingQueue<>(coreSize << 2),
+            new ThreadPoolExecutor.CallerRunsPolicy()
+        );
+    }
+
+    /**
+     * 格式化下载文件名函数
+     */
+    private static Function<String, String> FORMAT_FILE_NAME = (fileName) ->
+        String.format("attachment; filename=\"%s\"", fileName);
+
+    /**
+     * 判断是否是ie内核浏览器断言
+     */
+    private static Predicate<String> IS_IE = userAgent ->
+        // 是否是ie浏览器
+        userAgent.contains("MSIE")
+            // 是否是edge浏览器
+            || userAgent.contains("EDGE")
+            // 是否是ie内核浏览器
+            || userAgent.contains("TRIDENT");
 
     /**
      * 默认的临时文件夹
@@ -65,11 +108,66 @@ public class ExcelUtils {
      * @return 文件名
      */
     public static String excel(Supplier<List<?>> supplier) {
-        StackTraceElement stackTrace = getStackTrace(Export.class, Thread.currentThread().getStackTrace());
-        ExcelConfig config = parseYml(stackTrace);
+        Method method = getMethod(Export.class, Thread.currentThread().getStackTrace());
+        ExcelConfig config = parseYml(method);
         // 配置完整性校验
         config.validate();
         return generateExcel(config, supplier.get());
+    }
+
+    /**
+     * 下载生成的临时文件
+     * @param supplier 需要写入excel的数据
+     */
+    public static void download(Supplier<List<?>> supplier, HttpServletResponse response, HttpServletRequest request) throws UnsupportedEncodingException {
+        String fileName = excel(supplier);
+        ServletOutputStream out = null;
+        FileInputStream in = null;
+        String fileFullName = null;
+
+        // 设置下载文件名
+        String newFileName =
+            Optional.of(request.getHeader(USER_AGENT).toUpperCase())
+                .filter(IS_IE)
+                .map(t -> {
+                    try {
+                        return URLEncoder.encode(fileName, UTF_8);
+                    } catch (UnsupportedEncodingException e) {
+                        return EMPTY;
+                    }
+                }).orElse(new String(fileName.getBytes(UTF_8), ISO_8859_1));
+
+        response.setContentType(APPLICATION_OCTET_STREAM_VALUE);
+        response.setHeader(Headers.CONTENT_DISPOSITION, FORMAT_FILE_NAME.apply(newFileName));
+
+        byte[] buffer = new byte[1024];
+        try {
+            fileFullName = getFileFullPath(fileName);
+            in = new FileInputStream(fileFullName);
+            out = response.getOutputStream();
+            int len;
+            while ((len = in.read(buffer)) > 0) {
+                out.write(buffer, 0, len);
+                out.flush();
+            }
+        } catch (Exception e) {
+            LOGGER.error(e.getMessage(), e);
+            throw new UtilException(e.getMessage());
+        } finally {
+            IOUtils.closeQuietly(in);
+            IOUtils.closeQuietly(out);
+
+            // 异步删除文件
+            String name = fileFullName;
+            EXECUTOR.execute(() ->
+                Optional.of(new File(name))
+                    // 文件是否存在
+                    .filter(File::exists)
+                    // 删除文件
+                    .filter(File::delete)
+                    .ifPresent(file -> LOGGER.debug(String.format("file %s deleted!", name)))
+            );
+        }
     }
 
     /**
@@ -83,6 +181,7 @@ public class ExcelUtils {
         SXSSFSheet sheet = book.createSheet();
         // 表头样式
         CellStyle headerStyle = headerStyle(book);
+        List<CellRangeAddress> cellRangeAddresses = new ArrayList<>();
         // 绘制表头
         config.getHeaders()
             .forEach(headers -> {
@@ -96,13 +195,15 @@ public class ExcelUtils {
                     // 是否合并单元格
                     if (merge != null) {
                         String[] index = merge.split(",");
-                        sheet.addMergedRegion(
-                            new CellRangeAddress(Integer.parseInt(index[0]),
-                                Integer.parseInt(index[1]),
-                                Integer.parseInt(index[2]),
-                                Integer.parseInt(index[3])
-                            )
+                        CellRangeAddress cellAddresses = new CellRangeAddress(
+                            Integer.parseInt(index[0]),
+                            Integer.parseInt(index[1]),
+                            Integer.parseInt(index[2]),
+                            Integer.parseInt(index[3])
                         );
+                        sheet.addMergedRegion(cellAddresses);
+                        // 收集合并的单元格，用于后续设置合并后的样式，防止合并后单元格样式丢失
+                        cellRangeAddresses.add(cellAddresses);
                     }
                     cell.setCellValue(name);
                     cell.setCellStyle(headerStyle);
@@ -114,19 +215,20 @@ public class ExcelUtils {
             .filter(CollectionUtils::isNotEmpty)
             .ifPresent(list -> {
                 SXSSFRow row = sheet.createRow(sheet.getPhysicalNumberOfRows());
-                list.forEach(item -> {
-                    config.getFields()
-                        .forEach(fieldName -> {
-                            SXSSFCell cell = row.createCell(row.getPhysicalNumberOfCells());
-                            try {
-                                cell.setCellValue(getFieldValue(item, fieldName));
-                            } catch (Exception e) {
-                                LOGGER.error(e.getMessage(), e);
-                                throw new UtilException(e.getMessage());
-                            }
-                        });
-                });
+                list.forEach(item -> config.getFields()
+                    .forEach(fieldName -> {
+                        SXSSFCell cell = row.createCell(row.getPhysicalNumberOfCells());
+                        try {
+                            cell.setCellValue(getFieldValue(item, fieldName));
+                        } catch (Exception e) {
+                            LOGGER.error(e.getMessage(), e);
+                            throw new UtilException(e.getMessage());
+                        }
+                    }));
             });
+
+        // 设置合并单元格后的单元格样式
+        setCellRangeAddress(cellRangeAddresses, sheet);
 
         // 冻结表头
         Optional.ofNullable(config.getFreezePaneIndex())
@@ -152,19 +254,19 @@ public class ExcelUtils {
 
     /**
      * 获取字段值
-     * @param obj
-     * @param fieldName
-     * @return
+     * @param obj       对象
+     * @param fieldName 字段名称
+     * @return 字段值，转换成了String
      */
     private static String getFieldValue(Object obj, String fieldName) throws NoSuchFieldException, IllegalAccessException {
         if (obj == null || StringUtils.isEmpty(fieldName)) {
             return EMPTY;
         }
-
         // 如果传入对象是map 直接获取key值
         if (obj instanceof Map) {
             return ((Map) obj).containsKey(fieldName) ? (String) ((Map) obj).get(fieldName) : EMPTY;
         }
+        // 支持获取嵌套对象的值（例如：user.role.name，表示获取user对象中嵌套对象role的name字段的值）
         if (fieldName.contains(POINT)) {
             int i = fieldName.indexOf(POINT);
             String currentFieldName = fieldName.substring(0, i);
@@ -177,6 +279,10 @@ public class ExcelUtils {
             if (field.isAccessible()) {
                 field.setAccessible(false);
             }
+            // 当前字段为null，不在向下获取值
+            if (o == null) {
+                return EMPTY;
+            }
             return getFieldValue(o, nextFieldName);
         } else {
             return formatFieldValue(obj, fieldName);
@@ -186,10 +292,10 @@ public class ExcelUtils {
     /**
      * 格式化字段的值
      * </p>
-     * 日期字段根据JsonFormat注解的样式格式化
-     * @param obj
-     * @param fieldName
-     * @return
+     * 日期字段根据JsonFormat注解的样式格式化，没有设置则使用相关默认的格式
+     * @param obj       对象
+     * @param fieldName 字段名称
+     * @return 格式化后的值
      */
     private static String formatFieldValue(Object obj, String fieldName) throws NoSuchFieldException, IllegalAccessException {
         Field field = obj.getClass().getDeclaredField(fieldName);
@@ -264,11 +370,11 @@ public class ExcelUtils {
      */
     private static String save(Workbook book, ExcelConfig config) {
         // 生成唯一文件名
-        String fileName = String.format("%s_%s", config.getFileName(), UUID.randomUUID());
+        String fileName = String.format("%s_%s.%s", config.getFileName(), UUID.randomUUID(), XLSX.getSuffix());
 
         FileOutputStream out = null;
         try {
-            String fileFullPath = getFileFullPath(String.format("%s.%s", fileName, XLSX.getSuffix()));
+            String fileFullPath = getFileFullPath(fileName);
             File file = new File(fileFullPath);
             // 创建临时文件夹
             if (!file.getParentFile().exists()) {
@@ -342,13 +448,12 @@ public class ExcelUtils {
      * 解析yml文件
      * </p>
      * 解析成ExcelConfig，用于后续初始化excel
-     * @param trace 方法栈
+     * @param method 被某个注解标记的方法
      * @return
      */
-    private static ExcelConfig parseYml(StackTraceElement trace) {
+    private static ExcelConfig parseYml(Method method) {
         try {
-            Class<?> clazz = Class.forName(trace.getClassName());
-            Method method = clazz.getDeclaredMethod(trace.getMethodName());
+            Class<?> clazz = method.getDeclaringClass();
             Export exportConfig = method.getAnnotation(Export.class);
             ObjectMapper mapper = new ObjectMapper(new YAMLFactory());
             return mapper.readValue(
@@ -369,22 +474,28 @@ public class ExcelUtils {
      * @param stackTrace 方法调用栈
      * @return 方法栈
      */
-    private static <T extends Annotation> StackTraceElement getStackTrace(Class<T> type, StackTraceElement... stackTrace) {
+    private static <T extends Annotation> Method getMethod(Class<T> type, StackTraceElement... stackTrace) {
         return
             Arrays.stream(stackTrace)
-                .filter(trace -> {
+                .map(trace -> {
                     try {
                         Class<?> clazz = Class.forName(trace.getClassName());
                         return
-                            Optional.ofNullable(clazz.getDeclaredMethod(trace.getMethodName()))
-                                .map(m -> m.getAnnotation(type) != null)
-                                .orElse(false);
-                    } catch (NoSuchMethodException | ClassNotFoundException e) {
+                            Optional.ofNullable(clazz.getDeclaredMethods())
+                                .filter(ArrayUtils::isNotEmpty)
+                                .map(methods -> Stream.of(methods)
+                                    .filter(method -> method.getAnnotation(type) != null)
+                                    .findAny()
+                                    .orElse(null)
+                                )
+                                .orElse(null);
+                    } catch (ClassNotFoundException e) {
                         LOGGER.error(e.getMessage(), e);
                     }
-                    return false;
+                    return null;
                 })
-                .findFirst()
+                .filter(Objects::nonNull)
+                .findAny()
                 .orElseThrow(() -> new UtilException("没有找到ExportConfig标记的方法!"));
     }
 
@@ -422,6 +533,20 @@ public class ExcelUtils {
 
             return style;
         }
+
+        /**
+         * 设置合并单元格后的样式
+         * @param addresses 合并的单元格
+         * @param sheet     所属sheet
+         */
+        public static void setCellRangeAddress(List<CellRangeAddress> addresses, Sheet sheet) {
+            addresses.forEach(address -> {
+                RegionUtil.setBorderBottom(BorderStyle.THIN, address, sheet);
+                RegionUtil.setBorderLeft(BorderStyle.THIN, address, sheet);
+                RegionUtil.setBorderTop(BorderStyle.THIN, address, sheet);
+                RegionUtil.setBorderRight(BorderStyle.THIN, address, sheet);
+            });
+        }
     }
 
     /**
@@ -434,6 +559,17 @@ public class ExcelUtils {
         String YYYY_MM_DD_HH_MM_SS = "yyyy-MM-dd HH:mm:ss";
         String YYYY_MM_DD = "yyyy-MM-dd";
         String HH_MM_SS = "HH:mm:ss";
+        String UTF_8 = "UTF-8";
+        String ISO_8859_1 = "ISO8859_1";
+    }
+
+    interface MediaType {
+        String APPLICATION_OCTET_STREAM_VALUE = "application/octet-stream";
+    }
+
+    interface Headers {
+        String CONTENT_DISPOSITION = "Content-Disposition";
+        String USER_AGENT = "User-Agent";
     }
 
 
